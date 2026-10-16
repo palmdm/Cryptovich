@@ -5,6 +5,9 @@
 
 A donation platform that emphasizes privacy, anonymity, and security, as well as support for social features and federation via the ActivityPub protocol. It serves as a self-hosted alternative to projects like Patreon and Boosty.
 
+Instances:
+- [cryptovich.info.gf](https://cryptovich.info.gf) (official, is also available on [old subdomain](https://4tip.zalexanninev15.tar.nz) for viewing, but the login and some features won't work)
+
 > [!NOTE]
 > Since the project was originally designed for Russian-speaking users, you may come across some Russian text here and there. The changelog is written exclusively in Russian (but hey, everyone knows how to use a translator, and if something isn't clear, a neural network can help out—that's the world we live in).
 
