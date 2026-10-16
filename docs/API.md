@@ -12,6 +12,8 @@ hand-written OpenAPI 3.0 spec) are served at `GET /docs` once the API is
 running. This file is the fuller prose reference; `/docs` is the one to
 actually try requests from.
 
+<img width="1711" height="927" alt="image" src="https://github.com/user-attachments/assets/5617fecc-438f-4e76-89d3-e8c97be46c7b" />
+
 > **URL scheme note:** the spec's target public URL is `/@username`
 > (spec rule #131). The current implementation uses `/:username` (no `@`)
 > for both the API path and the Next.js route, to keep the first slice
