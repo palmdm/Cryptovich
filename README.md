@@ -29,22 +29,27 @@ Modular monolith, not microservices:
 
 ## Prerequisites
 
-- Node.js 20+, pnpm (`corepack enable`)
-- Docker (for Postgres + Redis in development), or your own local instances
 
 ## Getting started
 
+1. Install full Docker and Docker Compose
+2. Clone, edit .env file and launch!
+
 ```bash
+git clone https://github.com/palmdm/Cryptovich && cd Cryptovich
 cp .env.example .env
-pnpm install
+```
 
-docker compose up -d postgres redis
+And now:
 
-pnpm db:migrate     # creates the schema
-pnpm db:generate    # regenerates the Prisma client (also runs on install)
-pnpm db:seed        # optional: demo creator + free/paid post for local testing
+```bash
+chmod +x ./scripts/upgrade.sh && ./scripts/upgrade.sh
+```
 
-pnpm dev            # runs api (:4000), web (:3000) and worker in parallel
+or 
+
+```bash
+docker compose up -d --build && docker builder prune -f
 ```
 
 Visit `http://localhost:3000`, register an account, "Become a creator" from
