@@ -9,7 +9,7 @@ Instances:
 - [cryptovich.info.gf](https://cryptovich.info.gf) (official, is also available on [old subdomain](https://4tip.zalexanninev15.tar.nz) for viewing, but the login and some features won't work)
 
 > [!NOTE]
-> Since the project was originally designed for Russian-speaking users, you may come across some Russian text here and there. The changelog is written exclusively in Russian (but hey, everyone knows how to use a translator, and if something isn't clear, a neural network can help out—that's the world we live in).
+> Since the project was originally designed for Russian-speaking users, you may come across some Russian text here and there. The changelog is written exclusively in Russian (but hey, everyone knows how to use a translator, and if something isn't clear, a neural network can help out — that's the world we live in).
 
 ## Architecture
 
@@ -131,13 +131,6 @@ against a real Postgres database (via `DATABASE_URL`), including spinning
 up a local fake HTTP server to exercise real sticker-import and
 federation-delivery network code without touching the real internet. They
 require Postgres to be reachable (`docker compose up -d postgres`).
-
-## CI
-
-`.github/workflows/ci.yml` runs install → Prisma migrate → lint →
-typecheck → test → build against real Postgres/Redis service containers on
-every push/PR — the same commands as above, not a
-separate reduced check.
 
 ## API documentation & automation
 
