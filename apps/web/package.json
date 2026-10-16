@@ -1,0 +1,36 @@
+{
+  "name": "@platform/web",
+  "version": "0.6.0",
+  "private": true,
+  "scripts": {
+    "dev": "NEXT_TELEMETRY_DISABLED=1 next dev",
+    "build": "NEXT_TELEMETRY_DISABLED=1 next build",
+    "start": "NEXT_TELEMETRY_DISABLED=1 next start",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "next lint",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@fontsource-variable/inter": "^5.3.0",
+    "@platform/shared": "workspace:*",
+    "next": "^15.5.27",
+    "prismjs": "^1.30.0",
+    "qrcode": "^1.5.4",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "simple-icons": "^15.22.0",
+    "unicode-emoji-json": "^0.8.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "@types/prismjs": "^1.26.6",
+    "@types/qrcode": "^1.5.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "eslint": "^8.57.1",
+    "eslint-config-next": "^15.5.27",
+    "playwright": "^1.63.0",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.5"
+  }
+}

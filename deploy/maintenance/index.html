@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Tries the same address again every 20 seconds: when Cryptovich is back, the
+     reader is where they were going, without lifting a finger. -->
+<meta http-equiv="refresh" content="20">
+<meta name="robots" content="noindex">
+<title>Cryptovich — обновление</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%231d9bf0'/%3E%3C/svg%3E">
+<style>
+  :root { --bg: #ffffff; --card: #f7f9f9; --text: #0f1419; --muted: #536471; --accent: #1d9bf0; --glow: rgba(29, 155, 240, 0.16); --line: #eff3f4; color-scheme: light dark; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #000000; --card: #16181c; --text: #e7e9ea; --muted: #71767b; --glow: rgba(29, 155, 240, 0.22); --line: #2f3336; } }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; display: grid; place-items: center; padding: 24px 16px; background: var(--bg); color: var(--text); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { width: min(100%, 460px); text-align: center; }
+  /* The name in a rounded box that is "loading": a soft glow sweeps
+     across it and a thin bar runs along its lower edge, on one easing,
+     so the two move as one. Without motion: the bar stands half full. */
+  .mark { position: relative; isolation: isolate; overflow: hidden; display: flex; align-items: center; justify-content: center; width: fit-content; min-width: 176px; height: 68px; padding: 0 30px; box-sizing: border-box; margin: 0 auto 30px; border: 1px solid var(--line); border-radius: 20px; background: var(--card); font-weight: 800; font-size: 1.75rem; letter-spacing: -0.03em; color: var(--text); }
+  .mark::before { content: ""; position: absolute; inset: 0; z-index: -1; background: linear-gradient(90deg, transparent, var(--glow), transparent); transform: translateX(-100%); animation: sweep 2s cubic-bezier(0.65, 0, 0.35, 1) infinite; }
+  .mark::after { content: ""; position: absolute; left: 0; bottom: 0; width: 40%; height: 3px; border-radius: 3px; background: var(--accent); transform: translateX(-100%); animation: run 2s cubic-bezier(0.65, 0, 0.35, 1) infinite; }
+  @keyframes sweep { to { transform: translateX(100%); } }
+  @keyframes run { to { transform: translateX(250%); } }
+  @media (prefers-reduced-motion: reduce) {
+    .mark::before { animation: none; opacity: 0; }
+    .mark::after { animation: none; width: 50%; transform: none; }
+  }
+  h1 { margin: 0 0 10px; font-size: 1.45rem; line-height: 1.25; }
+  p { margin: 0 auto; max-width: 36ch; color: var(--muted); }
+  .note { margin-top: 26px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); font-size: 0.88rem; }
+  .note a { color: var(--accent); }
+  section:not([hidden]) ~ section:not([hidden]) { margin-top: 18px; }
+</style>
+</head>
+<body>
+<main>
+  <p class="mark" aria-hidden="true">Cryptovich</p>
+  <!-- One language when the browser says which; all three without script. -->
+  <section lang="ru">
+    <h1>Обновляем Cryptovich</h1>
+    <p>Это займёт пару минут. Страница откроется сама, как только всё будет готово.</p>
+  </section>
+  <section lang="en">
+    <h1>Cryptovich is being updated</h1>
+    <p>It takes a couple of minutes. This page opens by itself as soon as we're back.</p>
+  </section>
+  <section lang="ja">
+    <h1>Cryptovich を更新しています</h1>
+    <p>数分で終わります。準備ができると、このページは自動で開きます。</p>
+  </section>
+  <p class="note">
+    <span lang="ru">Что именно работает — на <a href="/status">странице состояния</a>.</span>
+    <span lang="en">What is up right now — on the <a href="/status">status page</a>.</span>
+    <span lang="ja">現在の稼働状況は<a href="/status">状態ページ</a>で確認できます。</span>
+  </p>
+</main>
+<script>
+  // Show only the reader's language (Russian, English or Japanese).
+  (function () {
+    var want = ((navigator.languages && navigator.languages[0]) || navigator.language || "ru").slice(0, 2).toLowerCase();
+    if (want !== "en" && want !== "ja") want = want === "ru" || want === "uk" || want === "be" || want === "kk" ? "ru" : "en";
+    document.documentElement.lang = want;
+    var all = document.querySelectorAll("main [lang]");
+    for (var i = 0; i < all.length; i++) if (all[i].getAttribute("lang") !== want) all[i].hidden = true;
+    var titles = { ru: "Cryptovich — обновление", en: "Cryptovich — updating", ja: "Cryptovich — 更新中" };
+    document.title = titles[want];
+  })();
+</script>
+</body>
+</html>

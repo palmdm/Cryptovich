@@ -1,0 +1,28 @@
+{
+  "name": "creator-platform",
+  "private": true,
+  "version": "0.6.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@10.34.5",
+  "scripts": {
+    "dev": "pnpm --parallel --filter=./apps/* dev",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r --workspace-concurrency=1 test",
+    "db:generate": "pnpm --filter @platform/db generate",
+    "db:migrate": "pnpm --filter @platform/db migrate",
+    "db:seed": "pnpm --filter @platform/db seed",
+    "db:test:setup": "pnpm --filter @platform/db migrate:test"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "@typescript-eslint/eslint-plugin": "^8.15.0",
+    "@typescript-eslint/parser": "^8.15.0",
+    "eslint": "^8.57.1",
+    "prettier": "^3.3.3",
+    "vitest": "^2.1.5"
+  }
+}

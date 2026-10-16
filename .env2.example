@@ -1,0 +1,259 @@
+
+# =====================================================================
+# Cryptovich Environment Configuration
+#
+# Most settings below can be changed in Admin Panel → Edit Settings
+# (accessible via fingerprint authentication or a 2FA code).
+# Values saved in the Admin Panel take precedence over this file.
+# Clicking "Reset" restores the value defined here.
+#
+# Infrastructure settings (database, Redis, website URL, ports,
+# storage, and keys) should remain in this file. They are displayed
+# in the same Admin Panel page but are not editable there.
+#
+# Replace placeholder passwords with your actual credentials.
+# =====================================================================
+
+# --- Runtime ----------------------------------------------------------
+
+# Docker containers set NODE_ENV=production via docker-compose.yml.
+# This value only affects pnpm commands executed directly on the server.
+NODE_ENV=production
+
+
+# --- Database and Redis -----------------------------------------------
+
+# The PostgreSQL password is stored when the database is created.
+# Changing it requires recreating or reconfiguring the database.
+POSTGRES_PASSWORD=yourdbpassword
+DATABASE_URL=postgresql://postgres:yourdbpassword@127.0.0.1:5433/platform
+POSTGRES_PORT=5433
+
+# Redis runs locally without a password.
+REDIS_URL=redis://127.0.0.1:6380
+REDIS_PORT=6380
+
+
+# --- Web Application and API ------------------------------------------
+
+# Public website URL. Used for email links, RSS feeds, federation,
+# and verification of fingerprint-based authentication keys.
+WEB_ORIGIN=https://yourdomainorsubdomain
+
+# Public API URL. Used for federation domain identification
+# (@username@domain) and Mastodon link previews.
+# This URL must be publicly accessible over HTTPS.
+API_PUBLIC_URL=https://yourdomainorsubdomain/api
+
+# The web application listens on localhost only.
+# External access must go through the WAF on port 3003.
+# Binding to 0.0.0.0 would expose port 3013 and bypass the WAF.
+WEB_PORT=3013
+WEB_BIND=127.0.0.1
+
+# The API is accessed through /api on the website.
+# Direct external access is not required.
+API_PORT=4000
+API_BIND=127.0.0.1
+
+# Database and Redis are accessible from localhost only.
+POSTGRES_BIND=127.0.0.1
+REDIS_BIND=127.0.0.1
+
+# Explicitly mark session cookies as Secure when TLS terminates
+# at the WAF.
+COOKIE_SECURE=true
+
+# Trusted proxy configuration for X-Forwarded-For.
+# IP-based rate limits depend on this setting.
+# If empty, only localhost and private networks are trusted.
+# Never set this to "true", as clients could spoof their IP addresses.
+TRUST_PROXY=
+
+
+# --- WAF and Status Monitoring ----------------------------------------
+
+# WAF listening port.
+# The gatekeeper keeps this port open even when Cryptovich is stopped.
+# Set GATE_PORT=off to disable the gatekeeper.
+GATE_PORT=3003
+
+# Status endpoint for external uptime monitoring services such as
+# UptimeRobot. Checks the website, API, database, Redis, and background
+# tasks on their configured localhost ports.
+# The gatekeeper exposes this endpoint externally.
+STATUS_PORT=3005
+STATUS_BIND=127.0.0.1
+
+# Optional localhost health-check port for background workers.
+# Used by the status page.
+# WORKER_HEALTH_PORT=3006
+
+
+# --- Administrator -----------------------------------------------------
+
+# An administrator already exists, so automatic account creation
+# currently has no effect and these values are no longer read.
+#
+# Change the administrator password using:
+# ./scripts/manage-users.sh set-admin-password --prompt
+#
+# If no active administrator remains, the API will recreate one
+# using this username. If ADMIN_PASSWORD is empty, a password will
+# be generated and printed once in `docker compose logs api`.
+# This is safer than storing a permanent password in this file.
+ADMIN_USERNAME=4tipdmin
+ADMIN_PASSWORD=youradminuserpassword
+ADMIN_BOOTSTRAP=true
+
+# Administrators must use two-factor authentication (2FA).
+# If the phone is lost, disable 2FA using:
+# ./scripts/manage-users.sh disable-2fa 4tipdmin
+ADMIN_REQUIRE_2FA=true
+
+
+# --- Registration ------------------------------------------------------
+
+# Registration modes:
+# invite = invitation-only registration
+# open   = anyone can register
+REGISTRATION_MODE=invite
+
+# Accounts can only be created through the website's browser interface.
+# Registration includes email/address validation and a proof-of-work
+# challenge that takes approximately one second to solve.
+REGISTRATION_BOT_CHECK=true
+
+# Proof-of-work difficulty (8–26).
+# Each additional bit doubles the computational work.
+REGISTRATION_POW_BITS=18
+
+
+# --- Search Engines and Posts -----------------------------------------
+
+# When true, the entire server is hidden from search engines:
+# all pages receive noindex directives, robots.txt blocks crawling,
+# and authors cannot disable the "Search Engines" restriction.
+# Individual authors can restrict their own accounts in their settings.
+HIDE_FROM_SEARCH_ENGINES=false
+
+# Maximum post length in characters (100–50,000).
+POST_MAX_CHARS=1200
+
+
+# --- Federation --------------------------------------------------------
+
+# Federation is enabled by default and can be disabled globally
+# or for individual authors in Admin Panel → Federation.
+#
+# Modes:
+# open      = federate with all domains except blocked ones
+# allowlist = federate only with explicitly listed domains
+FEDERATION_MODE=open
+
+# Allowed domains when FEDERATION_MODE=allowlist.
+FEDERATION_ALLOWED_DOMAINS=
+
+# Domains excluded from federation.
+FEDERATION_BLOCKED_DOMAINS=
+
+
+# --- Email -------------------------------------------------------------
+
+# Leave empty to disable outgoing email.
+# Without email delivery, password resets must be performed manually:
+# ./scripts/manage-users.sh set-password
+#
+# Example:
+# SMTP_URL=smtps://user:pass@smtp.example.com:465
+SMTP_URL=
+
+EMAIL_FROM=Cryptovich <no-reply@cryptovich.info.gf>
+
+
+# --- File Storage and Uploads -----------------------------------------
+
+# Uploads are stored in the uploads volume.
+# Docker containers use /data/uploads as configured in docker-compose.yml.
+# This path is used when running the application without Docker.
+#
+# To use S3-compatible storage, configure S3_BUCKET and the other
+# S3 settings below.
+UPLOAD_DIR=./data/uploads
+
+S3_BUCKET=
+S3_REGION=auto
+S3_ENDPOINT=
+S3_ACCESS_KEY_ID=
+S3_SECRET_ACCESS_KEY=
+
+# Maximum upload size:
+# Regular users: 5 MB
+# Administrators: 50 MB
+#
+# If the WAF limits request sizes, its limit must be higher than
+# the intended upload size. Otherwise, the WAF will reject uploads
+# before Cryptovich can process them.
+MAX_UPLOAD_BYTES=5242880
+ADMIN_MAX_UPLOAD_BYTES=52428800
+
+# Reprocess and recompress existing large images once when the API starts.
+# Mastodon rejects avatars and cover images larger than 2 MB.
+# Images that have already been processed are skipped.
+REPROCESS_IMAGES_ON_START=true
+
+
+# --- Integrations ------------------------------------------------------
+
+# Telegram bot token from @BotFather.
+# Required only for importing Telegram sticker packs
+# (Admin Panel → Stickers).
+# No token is needed for Sharkey, Misskey, or Mastodon.
+TELEGRAM_BOT_TOKEN=
+
+# UTC hour at which birthday notifications are sent to followers.
+# Example: 9 UTC corresponds to noon in Moscow.
+BIRTHDAY_NOTIFY_HOUR_UTC=9
+
+
+# --- Error Reporting (Optional) ---------------------------------------
+
+# DSN from sentry.io, a self-hosted Sentry instance, or GlitchTip.
+# Leave empty to disable error reporting.
+# Reports contain error details and the location where the error
+# occurred, without readers' personal data.
+# Changes take effect after restarting the application.
+SENTRY_DSN=
+SENTRY_ENVIRONMENT=production
+
+
+# --- Application Version ----------------------------------------------
+
+# The version is read from the first line of CHANGELOG.md.
+# Leave this value empty so the changelog remains authoritative.
+# Otherwise, this value overrides the changelog version and the
+# "Cryptovich updated to ..." announcement will not appear for new releases.
+APP_VERSION=
+
+
+# --- Branding ----------------------------------------------------------
+
+# Website favicon, installed-app icon, and notification icon.
+# Use an HTTPS URL or a file in the ./branding directory.
+# Example: FAVICON=/branding/favicon.png
+# Leave empty to use the default Cryptovich icon.
+FAVICON=
+
+
+# --- Browser Push Notifications ---------------------------------------
+
+# Leave empty to generate and persist a new key pair automatically.
+# Configure these values only when migrating keys from another instance.
+# Changing the keys will unsubscribe all browsers.
+VAPID_PUBLIC_KEY=
+VAPID_PRIVATE_KEY=
+
+
+# --- Local Paths -------------------------------------------------------
+
+CRYPTOVICH_DIR=/home/toro/proj2

@@ -1,0 +1,1732 @@
+// Creator Economy Platform — core data model.
+// Design rules (see docs/DATABASE.md):
+//  - Identity, Payment, Wallet, Content and Entitlement are separate entities.
+//  - All primary keys are UUIDs (pseudonymous, non-enumerable).
+//  - Money is always integer minor units (BigInt) + currency, never float.
+//  - Every payment-adjacent table carries the constraints needed for
+//    idempotent, auditable reconciliation.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/client"
+  // "native" covers local/CI dev (whatever host `generate` runs on).
+  // "linux-musl-openssl-3.0.x" is required for the Docker images: `prisma
+  // generate` running inside `node:20-alpine` can't reliably detect that
+  // Alpine ships OpenSSL 3.x (no `openssl` CLI binary present to probe),
+  // and silently defaults to an OpenSSL 1.1.x engine binary instead —
+  // which then fails at container *runtime* with "Error loading shared
+  // library libssl.so.1.1: No such file or directory", since Alpine only
+  // has libssl.so.3. Pinning the target explicitly sidesteps that
+  // detection entirely.
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Identity
+// ---------------------------------------------------------------------------
+
+enum UserRole {
+  USER
+  CREATOR
+  ADMIN
+  MODERATOR
+}
+
+model User {
+  id           String   @id @default(uuid())
+  username     String   @unique
+  email        String?  @unique
+  passwordHash String?
+  role         UserRole @default(USER)
+  emailVerifiedAt DateTime?
+  twoFactorEnabled Boolean @default(false)
+  twoFactorSecret  String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  deletedAt    DateTime?
+  // Moderation suspension — distinct from deletedAt (self/account deletion).
+  // A suspended user can't log in but their content/records are untouched.
+  suspendedAt  DateTime?
+  suspendedReason String?
+  // Server-side file storage costs the operator money, so it is a
+  // privilege an administrator grants after a contribution — the same
+  // confirmation that mints an API key. Everyone else links to files
+  // hosted elsewhere.
+  canUploadFiles Boolean @default(false)
+
+  creatorProfile CreatorProfile?
+  passkeys       Passkey[]
+  sessions       Session[]
+  wallets        Wallet[]
+  purchases      Purchase[]
+  subscriptions  Subscription[]
+  donationsSent  Donation[]         @relation("DonationSender")
+  rewardsSent    RewardGift[]       @relation("RewardSender")
+  entitlements   Entitlement[]
+  notifications  Notification[]
+  payments       Payment[]
+  auditLogs      AuditLog[]         @relation("AuditActor")
+  reportsFiled   Report[]           @relation("ReportsFiled")
+  reportsResolved Report[]          @relation("ReportsResolved")
+  comments       Comment[]
+  reactions      Reaction[]
+  bookmarks      Bookmark[]
+  follows        Follow[]
+  telegramLink   TelegramLink?
+  telegramCodes  TelegramLinkCode[]
+  telegramDeliveries TelegramDelivery[]
+  shortLinks     ShortLink[]        @relation("ShortLinkOwner")
+  personalLinks  ShortLink[]        @relation("ShortLinkReader")
+  linkClicks     ShortLinkClick[]
+  apiTokens      ApiToken[]
+  invitesIssued  InviteCode[]       @relation("InviteIssuer")
+  inviteRedemptions InviteRedemption[]
+  usernameHistory   UsernameHistory[]
+  emailTokens       EmailToken[]
+  apiAccessRequests ApiAccessRequest[]
+  apiAccessReviews  ApiAccessRequest[] @relation("ApiAccessReviewer")
+
+  pushSubscriptions PushSubscription[]
+  announcementReactions AnnouncementReaction[]
+  @@index([role])
+}
+
+// A passkey: sign-in with the device's fingerprint, face or PIN (WebAuthn).
+// Only the public key is kept; the biometric never leaves the device.
+model Passkey {
+  id           String    @id @default(uuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // base64url, as the browser names it.
+  credentialId String    @unique
+  // The credential's public key as a JWK (JSON), and its COSE algorithm:
+  // -7 ES256, -8 EdDSA, -257 RS256.
+  publicKey    String
+  alg          Int
+  // The authenticator's signature counter; a step backwards means a copy.
+  signCount    BigInt    @default(0)
+  transports   String?
+  name         String
+  createdAt    DateTime  @default(now())
+  lastUsedAt   DateTime?
+
+  @@index([userId])
+}
+
+model Session {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String   @unique
+  userAgent String?
+  ipHash    String?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  revokedAt DateTime?
+  // How it was opened: "password", "qr" (approved from a signed-in phone)
+  // or "passkey" (a fingerprint, face or device PIN). Shown in the history.
+  method    String   @default("password")
+  // A temporary sign-in: a browser-session cookie, and a few minutes'
+  // lifetime that every request renews — so it ends soon after the last
+  // tab is closed (lib/session.ts).
+  ephemeral Boolean  @default(false)
+
+  @@index([userId])
+}
+
+// Long-lived credentials for scripted access — the "mini-API for the
+// convenience of automation" a creator can point a script/cron job at
+// (confirm a payment, publish a post, ...) without a browser session.
+// Same hash-and-compare shape as Session: the raw token is shown exactly
+// once, at creation, and never stored or recoverable afterward.
+model ApiToken {
+  accessRequest ApiAccessRequest?
+  id         String    @id @default(uuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name       String
+  tokenHash  String    @unique
+  lastUsedAt DateTime?
+  createdAt  DateTime  @default(now())
+  revokedAt  DateTime?
+
+  @@index([userId])
+}
+
+// Public-facing creator identity, deliberately separate from User so that
+// identity (auth) never balloons into a mixed payment/content/analytics blob.
+model CreatorProfile {
+  id                  String   @id @default(uuid())
+  userId              String   @unique
+  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  displayName         String
+  bio                 String?
+  avatarUrl           String?
+  // A decorative frame drawn around the avatar (see AVATAR_FRAMES in
+  // @platform/shared). Null is no frame.
+  avatarFrame         String?
+  /// The author keeps their page and posts out of search engines (noindex).
+  hideFromSearch      Boolean  @default(false)
+  /// …and, apart from that, out of fediverse search and suggestions
+  /// (indexable/discoverable on the actor).
+  hideFromFediverseSearch Boolean @default(false)
+  coverUrl            String?
+  links               Json?    // [{label, url}]
+  showDonations       Boolean  @default(false)
+  showPurchaseCounts  Boolean  @default(false)
+  showSubscriberCount Boolean  @default(false)
+  // Free-text instructions for a non-crypto payment method (PayPal handle,
+  // bank transfer details, etc.) shown at checkout when a payer chooses
+  // "manual" instead of crypto. Null/empty means manual checkout isn't
+  // offered for this creator (spec: "support for third-party payment
+  // methods via the link, manual confirmation required").
+  manualPaymentInstructions String?
+  // Optional "talk to me" link shown on the public profile — any http(s)
+  // address, including a Delta Chat invite. The platform hosts no
+  // messaging of its own; this points at wherever the author already is.
+  chatUrl                   String?
+  // About the author, every part optional and shown on their page. The
+  // birth date gives the zodiac sign and, unless the year is hidden, the
+  // age; subscribers are told on the day.
+  birthDate                 DateTime? @db.Date
+  showBirthYear             Boolean   @default(true)
+  city                      String?
+  // ISO 3166-1 alpha-2, so a page can name it in the reader's language.
+  country                   String?
+  // A Spotify track, album or playlist shown on the author's page, kept in
+  // its canonical form (https://open.spotify.com/{kind}/{id}).
+  spotifyUrl                String?
+  // The year subscribers were last told it is this author's birthday —
+  // claimed in the same UPDATE that decides to tell them, so a second
+  // worker or a restart never tells them twice.
+  birthdayNotifiedYear      Int?
+  // Distinct, creator-authored greetings delivered as a Notification to the
+  // fan the moment each event completes (spec: "welcome messages for new
+  // subscribers, renewers, and donors are different"). Null falls back to a
+  // generic default at send time — see NotificationService.welcomeMessageFor.
+  welcomeMessageNewSubscriber String?
+  welcomeMessageRenewal       String?
+  welcomeMessageDonor         String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  products             DigitalProduct[]
+  subscriptionTiers    SubscriptionTier[]
+  donationsReceived    Donation[]
+  rewardsReceived      RewardGift[]
+  categories           ProductCategory[]
+  customEmoji          CustomEmoji[]
+  federationSettings   CreatorFederationSettings?
+  federationFollowers  FederationFollower[]
+  followers            Follow[]
+  federatedInstances   CreatorFederationInstance[]
+  externalConnections  CreatorExternalConnection[]
+  importJobs           ImportJob[]
+  discountCodes        DiscountCode[]
+  feedSources          FeedSource[]
+  fundraisingGoals     FundraisingGoal[]
+  folders              Folder[]
+
+  followerDeliveries FollowerDelivery[]
+  @@index([displayName])
+}
+
+// ---------------------------------------------------------------------------
+// Wallets (non-custodial references only — never secrets)
+// ---------------------------------------------------------------------------
+
+enum BlockchainNetwork {
+  BITCOIN
+  ETHEREUM
+  POLYGON
+  TRON
+  MONERO
+}
+
+model Wallet {
+  id        String            @id @default(uuid())
+  userId    String
+  user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  network   BlockchainNetwork
+  address   String
+  label     String?
+  createdAt DateTime          @default(now())
+
+  @@unique([userId, network, address])
+  @@index([network, address])
+}
+
+// ---------------------------------------------------------------------------
+// DigitalProduct — the single marketplace unit (posts, bundles, stickers, files, ...)
+// ---------------------------------------------------------------------------
+
+enum DigitalProductType {
+  POST
+  BUNDLE
+  STICKER_PACK
+  DIGITAL_FILE
+}
+
+enum ProductStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+  DISABLED
+}
+
+enum ProductVisibility {
+  PUBLIC
+  SUBSCRIBERS
+  TIER
+  PURCHASED
+  PRIVATE
+  // Closed to everyone but the author until a goal of theirs is reached,
+  // then open to everyone (`requiredGoalId`).
+  GOAL
+}
+
+model DigitalProduct {
+  id          String             @id @default(uuid())
+  creatorId   String
+  creator     CreatorProfile     @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  type        DigitalProductType
+  title       String
+  slug        String
+  description String?
+  coverUrl    String?
+  status      ProductStatus      @default(DRAFT)
+  visibility  ProductVisibility  @default(PRIVATE)
+  requiredTierId String?
+  requiredTier   SubscriptionTier? @relation(fields: [requiredTierId], references: [id])
+  requiredGoalId String?
+  requiredGoal   FundraisingGoal?  @relation(fields: [requiredGoalId], references: [id], onDelete: SetNull)
+  // A sale on a paid post: percent off (1–90) until an optional date. The
+  // price stays as it is; checkout charges @platform/shared's salePrice.
+  discountPercent Int?
+  discountEndsAt  DateTime?
+  featured    Boolean            @default(false)
+  featuredPosition Int?
+  // A simple, real, cumulative counter — not a time-bucketed analytics
+  // event stream. "Views this period" isn't derivable from it; only
+  // all-time views are (spec rule #125's per-product Views column).
+  viewCount   Int                @default(0)
+  // Same shape as viewCount but counts a card being *shown* in a feed
+  // listing, not opened — incremented by the feed itself, once per
+  // render, excluding the owner. The engagement breakdown (impressions
+  // vs. opens) is only meaningful once both numbers exist independently.
+  impressionCount Int            @default(0)
+  publishedAt DateTime?
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+  deletedAt   DateTime?
+
+  prices        ProductPrice[]
+  followerDeliveries FollowerDelivery[]
+  post          Post?
+  stickerPack   StickerPack?
+  digitalFile   DigitalFile?
+
+  // Bundle composition: this product (as BUNDLE) contains other products.
+  bundleItems   ProductItem[]      @relation("BundleItems")
+  // Reverse: which bundles include this product.
+  memberOfBundles ProductItem[]    @relation("MemberProduct")
+
+  categories    ProductCategoryItem[]
+  tags          ProductTagItem[]
+  entitlements  Entitlement[]
+  purchases     Purchase[]
+  federatedPosts FederatedPost[]
+  comments      Comment[]
+  reactions     Reaction[]
+  bookmarks     Bookmark[]
+  folderItems   FolderItem[]
+  shortLinks    ShortLink[]
+  telegramDeliveries TelegramDelivery[]
+
+  @@unique([creatorId, slug])
+  @@index([creatorId, status, visibility])
+  @@index([type])
+  @@index([requiredGoalId])
+}
+
+enum PricingType {
+  FREE
+  ONE_TIME
+  SUBSCRIPTION
+}
+
+model ProductPrice {
+  id          String         @id @default(uuid())
+  productId   String
+  product     DigitalProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+  currency    String
+  amountMinor BigInt
+  pricingType PricingType
+  active      Boolean        @default(true)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  @@index([productId, active])
+}
+
+// Generic composition edge: lets a BUNDLE reference any other product type
+// without hardcoding "BundlePost", so new product types slot in for free.
+model ProductItem {
+  id            String         @id @default(uuid())
+  productId     String
+  product       DigitalProduct @relation("BundleItems", fields: [productId], references: [id], onDelete: Cascade)
+  itemProductId String
+  itemProduct   DigitalProduct @relation("MemberProduct", fields: [itemProductId], references: [id], onDelete: Cascade)
+  position      Int            @default(0)
+  createdAt     DateTime       @default(now())
+
+  @@unique([productId, itemProductId])
+  @@index([productId, position])
+}
+
+model ProductCategory {
+  id        String         @id @default(uuid())
+  creatorId String
+  creator   CreatorProfile @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  name      String
+  slug      String
+  position  Int            @default(0)
+  createdAt DateTime       @default(now())
+
+  items ProductCategoryItem[]
+
+  @@unique([creatorId, slug])
+}
+
+model ProductCategoryItem {
+  productId  String
+  product    DigitalProduct  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  categoryId String
+  category   ProductCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@id([productId, categoryId])
+}
+
+model ProductTag {
+  id   String @id @default(uuid())
+  name String @unique
+
+  items ProductTagItem[]
+}
+
+model ProductTagItem {
+  productId String
+  product   DigitalProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+  tagId     String
+  tag       ProductTag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([productId, tagId])
+}
+
+// ---------------------------------------------------------------------------
+// Product type: POST
+// ---------------------------------------------------------------------------
+
+model Post {
+  id        String         @id @default(uuid())
+  productId String         @unique
+  product   DigitalProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+  content   String
+  excerpt   String?
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  attachments PostAttachment[]
+}
+
+enum AttachmentKind {
+  IMAGE
+  VIDEO
+  AUDIO
+  FILE
+}
+
+model PostAttachment {
+  id               String         @id @default(uuid())
+  postId           String
+  post             Post           @relation(fields: [postId], references: [id], onDelete: Cascade)
+  kind             AttachmentKind
+  // Points into StorageService, never a directly-servable path — the file
+  // is only ever streamed back through `GET
+  // /products/:id/attachments/:attachmentId/file`, which re-runs
+  // EntitlementService.canAccessProduct before reading it, exactly like the
+  // post's own text content (spec rule #13/#61: nothing outside
+  // EntitlementService decides access).
+  storageKey       String
+  mimeType         String
+  sizeBytes        Int
+  originalFilename String
+  altText          String?
+  position         Int            @default(0)
+  createdAt        DateTime       @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Product type: STICKER_PACK
+// ---------------------------------------------------------------------------
+
+enum StickerSourceProvider {
+  LOCAL
+  TELEGRAM
+  SHARKEY
+}
+
+model StickerPack {
+  id              String                @id @default(uuid())
+  productId       String                @unique
+  product         DigitalProduct        @relation(fields: [productId], references: [id], onDelete: Cascade)
+  sourceProvider  StickerSourceProvider @default(LOCAL)
+  sourceInstance  String?
+  sourceUrl       String?
+  sourceAuthor    String?
+  externalId      String?
+  license         String?
+  attribution     String?
+  createdAt       DateTime              @default(now())
+
+  stickers Sticker[]
+}
+
+enum StickerKind {
+  STATIC
+  ANIMATED
+  VIDEO
+  CUSTOM_EMOJI
+}
+
+model Sticker {
+  id         String      @id @default(uuid())
+  packId     String
+  pack       StickerPack @relation(fields: [packId], references: [id], onDelete: Cascade)
+  name       String
+  kind       StickerKind
+  url        String
+  externalId String?
+  position   Int         @default(0)
+}
+
+model CustomEmoji {
+  id             String         @id @default(uuid())
+  creatorId      String
+  creator        CreatorProfile @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  shortcode      String
+  url            String
+  sourceInstance String?
+  createdAt      DateTime       @default(now())
+
+  @@unique([creatorId, shortcode])
+}
+
+// ---------------------------------------------------------------------------
+// Product type: DIGITAL_FILE
+// ---------------------------------------------------------------------------
+
+model DigitalFile {
+  id               String         @id @default(uuid())
+  productId        String         @unique
+  product          DigitalProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+  storageKey       String
+  mimeType         String
+  sizeBytes        BigInt
+  originalFilename String
+  checksumSha256   String
+  createdAt        DateTime       @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Subscriptions
+// ---------------------------------------------------------------------------
+
+enum SubscriptionPeriod {
+  MONTH
+  YEAR
+}
+
+enum TierStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+model SubscriptionTier {
+  id          String             @id @default(uuid())
+  creatorId   String
+  creator     CreatorProfile     @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  currency    String
+  amountMinor BigInt
+  period      SubscriptionPeriod
+  benefits    Json?
+  /// A picture shown on the tier's card: `/covers/<key>`, served like a cover.
+  imageUrl    String?
+  /// A sale: percent off (1–90) until an optional date (see Sale in @platform/shared).
+  discountPercent Int?
+  discountEndsAt  DateTime?
+  status      TierStatus         @default(ACTIVE)
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  subscriptions Subscription[]
+  gatedProducts DigitalProduct[]
+
+  @@index([creatorId, status])
+}
+
+enum SubscriptionStatus {
+  PENDING
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+  EXPIRED
+  PAYMENT_FAILED
+}
+
+model Subscription {
+  id             String              @id @default(uuid())
+  userId         String
+  user           User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tierId         String
+  tier           SubscriptionTier    @relation(fields: [tierId], references: [id], onDelete: Cascade)
+  status         SubscriptionStatus  @default(PENDING)
+  paymentId      String?             @unique
+  payment        Payment?            @relation(fields: [paymentId], references: [id])
+  discountCodeId String?
+  discountCode   DiscountCode?       @relation(fields: [discountCodeId], references: [id])
+  startedAt      DateTime            @default(now())
+  expiresAt      DateTime
+  cancelledAt    DateTime?
+  // Stops the "your subscription ends soon" warning firing on every
+  // worker tick during the final days of a period.
+  expiryWarningSentAt DateTime?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  @@index([userId, status])
+  @@index([tierId, status])
+}
+
+enum DiscountType {
+  PERCENT_OFF
+  AMOUNT_OFF
+}
+
+model DiscountCode {
+  id             String       @id @default(uuid())
+  creatorId      String
+  creator        CreatorProfile @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  code           String
+  type           DiscountType
+  // PERCENT_OFF: 1-100. AMOUNT_OFF: minor units in the tier's currency.
+  value          Int
+  maxRedemptions Int?
+  redeemedCount  Int          @default(0)
+  expiresAt      DateTime?
+  active         Boolean      @default(true)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  subscriptions  Subscription[]
+
+  @@unique([creatorId, code])
+}
+
+// ---------------------------------------------------------------------------
+// Purchases, Payments, Donations, Blockchain
+// ---------------------------------------------------------------------------
+
+enum PurchaseStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
+  CANCELLED
+}
+
+model Purchase {
+  id          String         @id @default(uuid())
+  userId      String
+  user        User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  productId   String
+  product     DigitalProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+  priceId     String
+  amountMinor BigInt
+  currency    String
+  paymentId   String?        @unique
+  payment     Payment?       @relation(fields: [paymentId], references: [id])
+  status      PurchaseStatus @default(PENDING)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  @@index([userId, status])
+  @@index([productId])
+}
+
+enum PaymentPurpose {
+  PRODUCT_PURCHASE
+  BUNDLE_PURCHASE
+  SUBSCRIPTION
+  DONATION
+  REWARD
+}
+
+enum PaymentStatus {
+  CREATED
+  AWAITING_PAYMENT
+  CONFIRMED
+  EXPIRED
+  FAILED
+  REFUNDED
+}
+
+model Payment {
+  id             String         @id @default(uuid())
+  userId         String?
+  user           User?          @relation(fields: [userId], references: [id])
+  purpose        PaymentPurpose
+  amountMinor    BigInt
+  currency       String
+  status         PaymentStatus  @default(CREATED)
+  idempotencyKey String         @unique
+  expiresAt      DateTime?
+  // Informational only — set when the payer clicks "I've sent it".
+  // Never treated as authoritative: only the recipient confirming
+  // receipt actually completes a payment.
+  payerMarkedPaidAt DateTime?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  purchase             Purchase?
+  donation             Donation?
+  subscription         Subscription?
+  // A reward bought on its own, or alongside the donation/subscription above.
+  rewardGifts          RewardGift[]
+
+  @@index([status])
+  @@index([userId])
+}
+
+model Donation {
+  id           String   @id @default(uuid())
+  creatorId    String
+  creator      CreatorProfile @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  senderUserId String?
+  sender       User?    @relation("DonationSender", fields: [senderUserId], references: [id])
+  amountMinor  BigInt
+  currency     String
+  message      String?
+  isPublic     Boolean  @default(false)
+  paymentId    String?  @unique
+  payment      Payment? @relation(fields: [paymentId], references: [id])
+  status       PurchaseStatus @default(PENDING)
+  createdAt    DateTime @default(now())
+
+  @@index([creatorId, status])
+}
+
+// A public "help me reach X" target. Progress is never stored: it is
+// summed from CONFIRMED donations at read time, so a refunded or
+// rejected payment cannot leave the bar overstating what was raised, and
+// there is no counter to drift out of sync with the donation rows.
+// `startsAt` is what a goal counts from — raising a second goal after
+// the first is met must not inherit the first one's donations.
+/// What a goal counts: money arriving in one-off payments, or paying subscribers.
+enum GoalKind {
+  DONATIONS
+  SUBSCRIBERS
+}
+
+model FundraisingGoal {
+  id          String         @id @default(uuid())
+  creatorId   String
+  creator     CreatorProfile @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  kind        GoalKind       @default(DONATIONS)
+  title       String
+  description String?
+  // DONATIONS: integer minor units + currency, like every other amount
+  // here — never a float (see packages/shared's Money). Null otherwise.
+  targetMinor BigInt?
+  currency    String?
+  // SUBSCRIBERS: how many paying subscribers. Null otherwise.
+  targetCount Int?
+  active      Boolean        @default(true)
+  startsAt    DateTime       @default(now())
+  // The first moment progress met the target. Kept if it later dips: a
+  // goal that was reached was reached.
+  reachedAt   DateTime?
+  // The author marking it fulfilled — the promise behind it kept.
+  completedAt DateTime?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  // Posts that open when this goal is reached (visibility GOAL).
+  lockedProducts DigitalProduct[]
+
+  @@index([creatorId, active])
+}
+
+// ---------------------------------------------------------------------------
+// Folders — an author's own grouping of posts, files and links
+// ---------------------------------------------------------------------------
+
+enum FolderItemKind {
+  // An existing DigitalProduct: a post, a bundle, a sticker pack, or a
+  // paid file. Access is decided by EntitlementService exactly as it is
+  // outside a folder — putting a paid post in one neither unlocks it nor
+  // hides it from the listing.
+  PRODUCT
+  // A small file uploaded straight into the folder, capped by
+  // MAX_UPLOAD_BYTES. Public: anything that needs paying for is a
+  // DIGITAL_FILE product instead, so there is only ever one gating path.
+  UPLOAD
+  // Somewhere else entirely — the author linking out rather than hosting.
+  LINK
+}
+
+model Folder {
+  id          String         @id @default(uuid())
+  creatorId   String
+  creator     CreatorProfile @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  title       String
+  slug        String
+  description String?
+  // Author-chosen order on the profile page.
+  position    Int            @default(0)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  // Soft delete, like DigitalProduct: a folder can be removed without
+  // taking the posts inside it with it.
+  deletedAt   DateTime?
+
+  items FolderItem[]
+
+  @@unique([creatorId, slug])
+  @@index([creatorId, position])
+}
+
+model FolderItem {
+  id       String         @id @default(uuid())
+  folderId String
+  folder   Folder         @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  kind     FolderItemKind
+  position Int            @default(0)
+
+  // PRODUCT. Cascade so removing a post also removes it from the folder
+  // rather than leaving a row pointing at nothing.
+  productId String?
+  product   DigitalProduct? @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  // UPLOAD — storageKey is server-generated, never the client's filename.
+  storageKey       String?
+  originalFilename String?
+  mimeType         String?
+  sizeBytes        BigInt?
+
+  // LINK
+  url String?
+
+  // Shown for UPLOAD and LINK; a PRODUCT uses the product's own title.
+  label     String?
+  createdAt DateTime @default(now())
+
+  // A product belongs in a folder at most once.
+  @@unique([folderId, productId])
+  @@index([folderId, position])
+}
+
+// ---------------------------------------------------------------------------
+// Entitlements — the single authority for "can this user access this product"
+// ---------------------------------------------------------------------------
+
+enum EntitlementSourceType {
+  SUBSCRIPTION
+  PRODUCT_PURCHASE
+  BUNDLE_PURCHASE
+  MANUAL_GRANT
+}
+
+model Entitlement {
+  id         String                @id @default(uuid())
+  userId     String
+  user       User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  productId  String?
+  product    DigitalProduct?       @relation(fields: [productId], references: [id], onDelete: Cascade)
+  sourceType EntitlementSourceType
+  sourceId   String
+  startsAt   DateTime              @default(now())
+  expiresAt  DateTime?
+  createdAt  DateTime              @default(now())
+  revokedAt  DateTime?
+
+  @@unique([userId, productId, sourceType, sourceId])
+  @@index([userId, productId])
+  @@index([sourceType, sourceId])
+}
+
+// ---------------------------------------------------------------------------
+// Federation (ActivityPub)
+// ---------------------------------------------------------------------------
+
+enum FederationPlatform {
+  MASTODON
+  SHARKEY
+  ACTIVITYPUB
+}
+
+enum FederationInstanceStatus {
+  PENDING
+  APPROVED
+  BLOCKED
+}
+
+model FederationInstance {
+  id        String                    @id @default(uuid())
+  domain    String                    @unique
+  platform  FederationPlatform
+  status    FederationInstanceStatus  @default(PENDING)
+  verified  Boolean                   @default(false)
+  createdAt DateTime                  @default(now())
+
+  creatorAllowlist CreatorFederationInstance[]
+  federatedPosts   FederatedPost[]
+}
+
+model CreatorFederationSettings {
+  creatorId          String         @id
+  creator            CreatorProfile @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  enabled            Boolean        @default(false)
+  // On by default: once an author turns federation on, the point is that
+  // their public free posts reach the fediverse without a second opt-in.
+  // It only ever applies to posts that are already public and free — the
+  // gate on what may leave the platform is in the delivery path, not here.
+  autoPublish        Boolean        @default(true)
+  defaultVisibility  ProductVisibility @default(PUBLIC)
+  // ActivityPub actor keypair, generated once when federation is first
+  // enabled (spec rule #76). The public key is inherently public (it's
+  // published in the actor document); the private key here is a signing
+  // key, not a payment/wallet key — spec rule #51's "never in Postgres"
+  // constraint is about custodial wallet secrets, not this. A production
+  // deployment should still move it behind a KMS-backed secret store.
+  actorPublicKeyPem  String?
+  actorPrivateKeyPem String?
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+}
+
+// Someone on another server who follows this author. Created when a
+// verified Follow arrives, removed on Undo. `sharedInbox` is used for
+// delivery when the remote server publishes one, so a server with many
+// followers of the same author receives one request instead of many.
+model FederationFollower {
+  id             String         @id @default(uuid())
+  creatorId      String
+  creator        CreatorProfile @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  // The remote actor's canonical id (its ActivityPub `id`), which is what
+  // every activity from them is attributed to.
+  actorUri       String
+  inbox          String
+  sharedInbox    String?
+  // Kept for display and for the followers collection.
+  preferredUsername String?
+  domain         String
+  createdAt      DateTime       @default(now())
+
+  @@unique([creatorId, actorUri])
+  @@index([creatorId])
+  @@index([domain])
+}
+
+model CreatorFederationInstance {
+  creatorId  String
+  creator    CreatorProfile      @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  instanceId String
+  instance   FederationInstance  @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  createdAt  DateTime            @default(now())
+
+  @@id([creatorId, instanceId])
+}
+
+enum FederatedPostStatus {
+  PENDING
+  PUBLISHED
+  FAILED
+  DELETED
+  RETRACTED
+}
+
+model FederatedPost {
+  id            String               @id @default(uuid())
+  postId        String
+  post          DigitalProduct       @relation(fields: [postId], references: [id], onDelete: Cascade)
+  instanceId    String
+  instance      FederationInstance   @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  remoteActor   String?
+  remotePostId  String?
+  remoteUrl     String?
+  status        FederatedPostStatus  @default(PENDING)
+  publishedAt   DateTime?
+  lastSyncedAt  DateTime?
+  error         String?
+  retryCount    Int                  @default(0)
+  nextAttemptAt DateTime?
+  createdAt     DateTime             @default(now())
+
+  @@unique([postId, instanceId])
+  @@index([status])
+}
+
+// ---------------------------------------------------------------------------
+// External connections (Telegram, Sharkey sticker import sources)
+// ---------------------------------------------------------------------------
+
+enum ExternalConnectionProvider {
+  TELEGRAM
+  SHARKEY
+}
+
+enum ExternalConnectionStatus {
+  CONNECTED
+  DISCONNECTED
+  ERROR
+}
+
+model CreatorExternalConnection {
+  id                String                      @id @default(uuid())
+  creatorId         String
+  creator           CreatorProfile              @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  provider          ExternalConnectionProvider
+  status            ExternalConnectionStatus    @default(CONNECTED)
+  externalAccountId String?
+  metadata          Json?
+  secretRef         String?  // opaque pointer into secret storage; never the secret itself
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([creatorId, provider])
+}
+
+enum ImportJobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model ImportJob {
+  id            String                     @id @default(uuid())
+  creatorId     String
+  creator       CreatorProfile             @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  provider      ExternalConnectionProvider
+  status        ImportJobStatus            @default(PENDING)
+  sourceRef     String
+  resultPackId  String?
+  error         String?
+  createdAt     DateTime                   @default(now())
+  updatedAt     DateTime                   @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Dual-feed ingestion — pulls a creator's own public posts from an external
+// ActivityPub account (Mastodon/Sharkey) into their local feed as free
+// PUBLIC posts, alongside the paid content authored directly here. This is
+// deliberately a separate model from CreatorExternalConnection/ImportJob
+// above: those are one-shot sticker-pack imports keyed uniquely per
+// provider per creator, while a feed source is a standing subscription a
+// worker tick polls repeatedly, and a creator could plausibly want both a
+// Sharkey sticker connection and a Sharkey feed source at once.
+// ---------------------------------------------------------------------------
+
+enum FeedSourcePlatform {
+  MASTODON
+  SHARKEY
+  RSS
+}
+
+model FeedSource {
+  id            String             @id @default(uuid())
+  creatorId     String
+  creator       CreatorProfile     @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  platform      FeedSourcePlatform
+  actorUrl      String
+  active        Boolean            @default(true)
+  lastFetchedAt DateTime?
+  lastError     String?
+  // When the account's whole history was last walked; null means the next
+  // ingestion reads every page, not only up to the first one it knows.
+  fullSyncedAt  DateTime?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  importedItems FeedImportedItem[]
+
+  @@unique([creatorId, platform, actorUrl])
+}
+
+// Dedupe ledger: the same remote note is never turned into a second local
+// post, no matter how many times the worker re-polls the outbox.
+model FeedImportedItem {
+  id           String     @id @default(uuid())
+  feedSourceId String
+  feedSource   FeedSource @relation(fields: [feedSourceId], references: [id], onDelete: Cascade)
+  remoteId     String
+  productId    String?
+  createdAt    DateTime   @default(now())
+
+  @@unique([feedSourceId, remoteId])
+}
+
+// ---------------------------------------------------------------------------
+// Notifications, Audit
+// ---------------------------------------------------------------------------
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String
+  payload   Json?
+  readAt    DateTime?
+  // When it went out as a browser push; null until the worker sends it.
+  pushedAt  DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId, readAt])
+  @@index([pushedAt, createdAt])
+}
+
+// A browser that asked to be told about new notifications (Web Push). The
+// endpoint is the push service's address for that one browser; p256dh and
+// auth are the keys each message is encrypted to, so the push service
+// carries it without being able to read it.
+model PushSubscription {
+  id            String    @id @default(uuid())
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  endpoint      String    @unique
+  p256dh        String
+  auth          String
+  userAgent     String?
+  // The reader's Cryptovich language (en, ru, ja), for the text of a push.
+  locale        String?
+  createdAt     DateTime  @default(now())
+  lastSuccessAt DateTime?
+
+  @@index([userId])
+}
+
+model Comment {
+  id        String   @id @default(uuid())
+  productId String
+  product   DigitalProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // A reply points at the comment it answers, which is what makes a
+  // thread. Null is a top-level comment. Cascade would delete a whole
+  // subtree when one comment goes, so replies are re-parented in the
+  // service instead and the thread survives.
+  parentId  String?
+  parent    Comment? @relation("CommentReplies", fields: [parentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  replies   Comment[] @relation("CommentReplies")
+  body      String
+  createdAt DateTime @default(now())
+  // Soft delete: preserves the row for moderation history/audit instead of
+  // a hard delete, mirroring DigitalProduct.deletedAt elsewhere in the schema.
+  deletedAt DateTime?
+
+  @@index([productId, createdAt])
+}
+
+// A reaction is never gated by EntitlementService the way comments are —
+// picking an emoji doesn't reveal anything about the post's content, so
+// it stays available on a locked/paid post the same as its title and
+// price already are (spec: "a paid post stays listed... only its body is
+// withheld"). One user can pick any number of the fixed emoji set on the
+// same product; the unique triple is what makes toggling idempotent
+// instead of piling up duplicate rows on a double click.
+model Reaction {
+  id        String         @id @default(uuid())
+  productId String
+  product   DigitalProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+  // Null for a reader who reacted without an account: they are told apart
+  // by `readerKey`, the SHA-256 of a random cookie their browser holds —
+  // never an address, and never the cookie itself.
+  userId    String?
+  user      User?          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  readerKey String?
+  // Validated against a fixed whitelist in the API layer
+  // (packages/shared's REACTION_EMOJIS), not a free-text field — this
+  // table doesn't enforce it itself so the set can grow without a
+  // migration, but nothing outside that whitelist should ever land here.
+  emoji     String
+  createdAt DateTime       @default(now())
+
+  @@unique([productId, userId, emoji])
+  @@unique([productId, readerKey, emoji])
+  @@index([productId, createdAt])
+}
+
+// A save-for-later, distinct from Entitlement (which means "can access")
+// and from Purchase (which means "paid for") — a bookmark implies neither.
+model Bookmark {
+  id        String         @id @default(uuid())
+  userId    String
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  productId String
+  product   DigitalProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+  createdAt DateTime       @default(now())
+
+  @@unique([userId, productId])
+  @@index([productId])
+}
+
+// A lease held by whichever worker instance is currently running a given
+// job, so a second instance skips that tick instead of doing the same
+// work twice — double federation deliveries, double expiry handling.
+//
+// A lease rather than a Postgres advisory lock: advisory locks are either
+// transaction-scoped (which would mean holding a transaction open across
+// the job's HTTP calls) or session-scoped (which a connection pool can
+// hand to the wrong connection on release). A row with an expiry needs
+// neither, and an instance that dies mid-job simply lets its lease lapse.
+model WorkerLock {
+  name      String   @id
+  holder    String
+  expiresAt DateTime
+  updatedAt DateTime @updatedAt
+}
+
+enum EmailTokenPurpose {
+  PASSWORD_RESET
+  EMAIL_VERIFICATION
+}
+
+// A one-time link mailed to an address. Only the hash is stored, exactly
+// like Session.tokenHash and ApiToken.tokenHash: a database dump must not
+// hand someone a working password-reset link for every pending request.
+//
+// Single use is enforced by `usedAt` rather than deletion, so a second
+// click on the same link is distinguishable from an expired one and the
+// row survives for audit.
+model EmailToken {
+  id        String            @id @default(uuid())
+  userId    String
+  user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  purpose   EmailTokenPurpose
+  tokenHash String            @unique
+  // The address it was sent to, kept so a verification token cannot be
+  // redeemed after the user has since changed their email.
+  sentTo    String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime          @default(now())
+
+  @@index([userId, purpose])
+  @@index([expiresAt])
+}
+
+// ---------------------------------------------------------------------------
+// Invites — registration is closed; an account needs a code to exist
+// ---------------------------------------------------------------------------
+
+model InviteCode {
+  id          String   @id @default(uuid())
+  // Long, CSPRNG-generated and unguessable: the code is the entire
+  // authorisation to create an account, so it is sized like a secret
+  // rather than like a coupon.
+  code        String   @unique
+  issuedById  String?
+  issuedBy    User?    @relation("InviteIssuer", fields: [issuedById], references: [id], onDelete: SetNull)
+  note        String?
+  // Null means unlimited. Redemption count is derived from the ledger
+  // below rather than kept as a counter, so it can never drift.
+  maxUses     Int?     @default(1)
+  expiresAt   DateTime?
+  revokedAt   DateTime?
+  createdAt   DateTime @default(now())
+
+  redemptions InviteRedemption[]
+
+  @@index([revokedAt, expiresAt])
+}
+
+// One row per account created with a code. The unique constraint on
+// userId means an account can never be attributed to two invites.
+model InviteRedemption {
+  id           String     @id @default(uuid())
+  inviteCodeId String
+  inviteCode   InviteCode @relation(fields: [inviteCodeId], references: [id], onDelete: Cascade)
+  userId       String     @unique
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt    DateTime   @default(now())
+
+  @@index([inviteCodeId])
+}
+
+// ---------------------------------------------------------------------------
+// Programmatic API access — registered, contributed, and admin-approved
+// ---------------------------------------------------------------------------
+
+enum ApiAccessStatus {
+  REQUESTED
+  APPROVED
+  REJECTED
+  REVOKED
+}
+
+// A request for programmatic API access. Running the API costs the
+// operator money, so access is contributed for rather than free: the user
+// asks, sends the administrator between the minimum and maximum
+// contribution, and an administrator confirms receipt — the same
+// trust-based confirmation every other payment here uses, because the
+// platform never custodies funds. Approval is what mints the token;
+// there is no self-serve path.
+model ApiAccessRequest {
+  id             String          @id @default(uuid())
+  userId         String
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status         ApiAccessStatus @default(REQUESTED)
+  // What the requester says they sent, in minor units. Recorded as their
+  // claim; the administrator's confirmation is the authority.
+  amountMinor    BigInt
+  currency       String          @default("USD")
+  // How they say they sent it, and anything they want the admin to know.
+  note           String?
+  reviewedById   String?
+  reviewedBy     User?           @relation("ApiAccessReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+  reviewedAt     DateTime?
+  reviewNote     String?
+  // The token minted on approval. Kept so an admin can see that a request
+  // produced a key without being able to read the key itself.
+  apiTokenId     String?         @unique
+  apiToken       ApiToken?       @relation(fields: [apiTokenId], references: [id], onDelete: SetNull)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@index([status, createdAt])
+  @@index([userId])
+}
+
+// A previous username, kept reserved after a rename so a bookmarked
+// profile or post link (and, for federation, a previously-issued actor
+// URI) keeps resolving to its owner instead of silently 404ing or, worse,
+// being claimable by a stranger. Global uniqueness matches User.username:
+// registration and renaming both have to check this table as well as
+// User, or a new signup could grab a name that used to belong to someone
+// else, and an old link to that someone would start resolving to the
+// wrong account.
+model UsernameHistory {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  username  String   @unique
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model AuditLog {
+  id           String   @id @default(uuid())
+  actorUserId  String?
+  actor        User?    @relation("AuditActor", fields: [actorUserId], references: [id])
+  action       String
+  targetType   String
+  targetId     String
+  metadata     Json?
+  createdAt    DateTime @default(now())
+
+  @@index([targetType, targetId])
+  @@index([actorUserId])
+}
+
+// ---------------------------------------------------------------------------
+// Moderation
+// ---------------------------------------------------------------------------
+
+enum ReportTargetType {
+  CREATOR
+  PRODUCT
+  POST
+  STICKER_PACK
+  BUNDLE
+  COMMENT
+}
+
+enum ReportStatus {
+  OPEN
+  REVIEWING
+  RESOLVED
+  DISMISSED
+}
+
+model Report {
+  id           String       @id @default(uuid())
+  reporterId   String?
+  reporter     User?        @relation("ReportsFiled", fields: [reporterId], references: [id])
+  targetType   ReportTargetType
+  targetId     String
+  /// spam, scam, illegal, harassment, adult, copyright or other — REPORT_CATEGORIES in the API.
+  category     String?
+  reason       String
+  status       ReportStatus @default(OPEN)
+  resolvedById String?
+  resolvedBy   User?        @relation("ReportsResolved", fields: [resolvedById], references: [id])
+  resolutionNote String?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  @@index([targetType, targetId])
+  @@index([status])
+  @@index([reporterId, targetType, targetId])
+}
+
+// Server-wide switches the administrator owns.
+//
+// Deliberately a key/value table rather than a column per setting: these
+// are operator choices that come and go with features, and a one-row
+// table with a growing set of columns needs a migration for each one.
+// Values are stored as strings and parsed by the settings service, which
+// is the only place that knows what each key means.
+model ServerSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+// One post on its way to one follower's inbox.
+//
+// This is how a post reaches the people who followed its author from
+// another server. It is deliberately separate from FederatedPost, which
+// pushes to instances an administrator allowlisted: a follower asked for
+// these posts, so their delivery does not wait on an instance being
+// approved first. The inbox is a follower's shared inbox where they have
+// one, so a server with fifty followers here receives one delivery.
+enum FollowerDeliveryStatus {
+  PENDING
+  DELIVERED
+  FAILED
+}
+
+// What is being delivered: a new post (Create{Note}), or the author's
+// changed profile (Update{Person}) — the second is how a new avatar reaches
+// another server without waiting for it to re-fetch on its own schedule.
+enum FollowerDeliveryKind {
+  POST
+  PROFILE
+  // An edit of a post the follower's server already has: Update{Note}.
+  UPDATE
+}
+
+model FollowerDelivery {
+  id            String                 @id @default(uuid())
+  kind          FollowerDeliveryKind   @default(POST)
+  // Set for a POST delivery.
+  productId     String?
+  product       DigitalProduct?        @relation(fields: [productId], references: [id], onDelete: Cascade)
+  // Set for a PROFILE delivery.
+  creatorId     String?
+  creator       CreatorProfile?        @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  inbox         String
+  status        FollowerDeliveryStatus @default(PENDING)
+  retryCount    Int                    @default(0)
+  nextAttemptAt DateTime?
+  lastError     String?
+  deliveredAt   DateTime?
+  createdAt     DateTime               @default(now())
+  updatedAt     DateTime               @updatedAt
+
+  @@unique([productId, inbox, kind])
+  @@index([status, nextAttemptAt])
+  @@index([creatorId, kind, status])
+}
+
+// A server announcement, shown above the page like Mastodon's. Written by
+// an administrator, or made by the API when a new Cryptovich version first
+// starts: then `version` is set and `text` is empty, and the page shows
+// that version's release notes in the reader's own language.
+model Announcement {
+  id          String                 @id @default(uuid())
+  text        String?
+  version     String?                @unique
+  startsAt    DateTime               @default(now())
+  endsAt      DateTime?
+  createdById String?
+  createdAt   DateTime               @default(now())
+  updatedAt   DateTime               @updatedAt
+
+  reactions   AnnouncementReaction[]
+
+  @@index([startsAt])
+}
+
+model AnnouncementReaction {
+  id             String       @id @default(uuid())
+  announcementId String
+  announcement   Announcement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  emoji          String
+  createdAt      DateTime     @default(now())
+
+  @@unique([announcementId, userId, emoji])
+}
+
+// A server-wide sticker or custom emoji, managed by the administrator and
+// usable as :shortcode: in any post and as a reaction anywhere. Stored
+// here rather than hot-linked, so readers never load it from a third
+// server and it does not vanish when the source does.
+model ServerEmoji {
+  id          String   @id @default(uuid())
+  // Set when the administrator offers this sticker as a reward.
+  reward      Reward?
+  shortcode   String   @unique
+  // The set it is shown under in the picker ("acat", "anime", …).
+  category    String   @default("")
+  storageKey  String
+  mimeType    String
+  animated    Boolean  @default(false)
+  sizeBytes   Int
+  sourceUrl   String?
+  createdById String?
+  createdAt   DateTime @default(now())
+
+  @@index([category])
+}
+
+enum EmojiImportSource {
+  SHARKEY
+  TELEGRAM
+}
+
+enum EmojiImportStatus {
+  PENDING
+  RUNNING
+  DONE
+  FAILED
+}
+
+// An import the administrator asked for; the worker carries it out.
+model EmojiImportJob {
+  id            String            @id @default(uuid())
+  source        EmojiImportSource
+  // A Sharkey/Misskey instance URL, or a Telegram sticker set name or link.
+  sourceRef     String
+  // Everything goes under this set; empty keeps the source's own grouping.
+  category      String?
+  // A fediverse instance's sets to take ("" is its ungrouped emoji); empty
+  // takes every one.
+  remoteCategories String[]       @default([])
+  status        EmojiImportStatus @default(PENDING)
+  importedCount Int               @default(0)
+  skippedCount  Int               @default(0)
+  error         String?
+  createdById   String?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+  log           EmojiImportLogEntry[]
+
+  @@index([status, createdAt])
+}
+
+enum EmojiImportOutcome {
+  ADDED
+  SKIPPED
+}
+
+// One line of an import's log: what each sticker of the source became,
+// and for a skipped one, why — so "added 684, skipped 1289" can be read.
+model EmojiImportLogEntry {
+  id        String             @id @default(uuid())
+  jobId     String
+  job       EmojiImportJob     @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  // The sticker's name at the source, and the alias it got or wanted.
+  name      String
+  shortcode String?
+  // The set it came from or went into.
+  set       String?
+  outcome   EmojiImportOutcome
+  // ALIAS_TAKEN, VIDEO, BAD_NAME, DOWNLOAD_FAILED, NOT_A_PICTURE, OVER_LIMIT.
+  reason    String?
+  createdAt DateTime           @default(now())
+
+  @@index([jobId, outcome])
+}
+
+// ---------------------------------------------------------------------------
+// Rewards — server stickers the administrator offers for supporters to buy
+// for an author, alone or with a tip or a subscription. The author keeps
+// what they are given and may react with it on anyone's post; nobody else
+// can react with a reward sticker.
+// ---------------------------------------------------------------------------
+
+model Reward {
+  id         String      @id @default(uuid())
+  emojiId    String      @unique
+  emoji      ServerEmoji @relation(fields: [emojiId], references: [id], onDelete: Restrict)
+  // Integer minor units + currency, like every other amount. 0 is free.
+  priceMinor BigInt
+  currency   String
+  active     Boolean     @default(true)
+  position   Int         @default(0)
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+  gifts      RewardGift[]
+
+  @@index([active, position])
+}
+
+enum RewardGiftStatus {
+  PENDING
+  GRANTED
+  CANCELLED
+}
+
+model RewardGift {
+  id           String           @id @default(uuid())
+  rewardId     String
+  reward       Reward           @relation(fields: [rewardId], references: [id], onDelete: Restrict)
+  // The author it was given to.
+  creatorId    String
+  creator      CreatorProfile   @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  senderUserId String?
+  sender       User?            @relation("RewardSender", fields: [senderUserId], references: [id], onDelete: SetNull)
+  // Null for a free reward; otherwise the payment it rides on — its own,
+  // or a donation's or subscription's, which then carries both amounts.
+  paymentId    String?
+  payment      Payment?         @relation(fields: [paymentId], references: [id])
+  // What it cost when bought — the price can change later.
+  amountMinor  BigInt
+  currency     String
+  message      String?
+  // The author is not told who sent it.
+  anonymous    Boolean          @default(false)
+  status       RewardGiftStatus @default(PENDING)
+  createdAt    DateTime         @default(now())
+  grantedAt    DateTime?
+
+  @@index([creatorId, status])
+  @@index([paymentId])
+  @@index([senderUserId, creatorId, createdAt])
+}
+
+// Following an author for free: no tier, no payment — their new posts
+// reach the follower's feed and notifications (and Telegram, if linked).
+// Reading stays what each post allows; following opens nothing.
+model Follow {
+  id        String         @id @default(uuid())
+  userId    String
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  creatorId String
+  creator   CreatorProfile @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  createdAt DateTime       @default(now())
+
+  @@unique([userId, creatorId])
+  @@index([creatorId])
+}
+
+// A short address on this site, /s/<code>, that sends the reader on to
+// `targetUrl` — made by a member on the "Links" page, or made for one
+// reader from a post's @[text](url) (productId and readerId set), so the
+// author can see which readers followed it.
+model ShortLink {
+  id        String           @id @default(uuid())
+  code      String           @unique
+  ownerId   String
+  owner     User             @relation("ShortLinkOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  targetUrl String
+  title     String?
+  productId String?
+  product   DigitalProduct?  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  readerId  String?
+  reader    User?            @relation("ShortLinkReader", fields: [readerId], references: [id], onDelete: Cascade)
+  clicks    Int              @default(0)
+  createdAt DateTime         @default(now())
+  clickLog  ShortLinkClick[]
+
+  @@unique([productId, readerId, targetUrl])
+  @@index([ownerId, createdAt])
+}
+
+// One use of a short link: when, from which site, and — only if they were
+// signed in here — by whom. No address, no cookie, nothing else.
+model ShortLinkClick {
+  id           String    @id @default(uuid())
+  linkId       String
+  link         ShortLink @relation(fields: [linkId], references: [id], onDelete: Cascade)
+  userId       String?
+  user         User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  referrerHost String?
+  createdAt    DateTime  @default(now())
+
+  @@index([linkId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Telegram bridge: the server's bot, linked to a member's account
+// ---------------------------------------------------------------------------
+
+// A member's Telegram, linked by sending the bot a one-time code (/start).
+model TelegramLink {
+  id                String   @id @default(uuid())
+  userId            String   @unique
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // The private chat with the bot (Telegram's user id).
+  chatId            BigInt   @unique
+  telegramUsername  String?
+  // The language Telegram says the member uses (ru, en, ja…), for the
+  // bot's own words in the chat.
+  languageCode      String?
+  // New posts of followed and subscribed authors, sent to the chat.
+  receivePosts      Boolean  @default(true)
+  // An author's messages to the bot become posts.
+  publishEnabled    Boolean  @default(false)
+  // Who reads what is published that way: PUBLIC or SUBSCRIBERS.
+  publishVisibility String   @default("PUBLIC")
+  // Saved as a draft instead of published.
+  publishAsDraft    Boolean  @default(false)
+  linkedAt          DateTime @default(now())
+}
+
+// The code a member sends the bot to link their account; short-lived.
+model TelegramLinkCode {
+  code      String   @id
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+}
+
+enum TelegramDeliveryStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+// One new post on its way to one member's Telegram. What to send is
+// decided when it is queued, by the API: `text` is the post as this reader
+// may read it (personal links made), `full` whether they may read it all.
+model TelegramDelivery {
+  id        String                 @id @default(uuid())
+  productId String
+  product   DigitalProduct         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  full      Boolean
+  text      String
+  status    TelegramDeliveryStatus @default(PENDING)
+  attempts  Int                    @default(0)
+  lastError String?
+  createdAt DateTime               @default(now())
+  sentAt    DateTime?
+
+  @@unique([productId, userId])
+  @@index([status, createdAt])
+}

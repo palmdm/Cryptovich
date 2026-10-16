@@ -1,0 +1,31 @@
+node_modules/
+dist/
+.next/
+.turbo/
+*.tsbuildinfo
+.env
+.env.local
+# Production values, once the real database password is pasted in.
+.env.production
+# A tracked symlink (not a secret file itself) to the repo-root .env, so
+# Prisma's CLI — which only auto-loads a .env from its own package dir —
+# picks up DATABASE_URL without every dev needing to `source` it manually.
+!packages/db/.env
+coverage/
+pnpm-lock.yaml.bak
+apps/web/.next/
+packages/db/generated/
+apps/api/data/
+docker-compose.override.yml
+apps/status/data
+deploy/maintenance/on
+deploy/maintenance/window
+
+# Release zips (scripts/make-release.sh) and, on a server, the list of the
+# files the installed one shipped.
+releases/
+.release-files
+.release-files.installed
+
+# The updater's shared folder (requests, status) on a server.
+deploy/updates/

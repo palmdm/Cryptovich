@@ -1,0 +1,179 @@
+# Every host-facing port below is a `${VAR:-default}` read from .env
+# (POSTGRES_PORT, REDIS_PORT, API_PORT, WEB_PORT) — change .env, not this
+# file, to move something off its default. Postgres/Redis default to
+# 5433/6380 (offset from their usual 5432/6379) to avoid colliding with a
+# locally-installed instance of either; containers still talk to each
+# other on the standard ports internally regardless of what's mapped on
+# the host. Nothing here is hardcoded to a specific port on purpose —
+# .env is the single place that decides where things actually are.
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      # `:?` makes compose refuse to start rather than fall back to a
+      # default — shipping a database reachable with postgres/postgres is
+      # not a mistake that should be possible to make quietly.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (openssl rand -base64 24)}
+      POSTGRES_DB: platform
+    ports:
+      # Host side only — containers still talk to each other on the
+      # standard 5432 internally (see api/worker's DATABASE_URL below,
+      # which is unaffected by this). This only matters for host-side
+      # tools (pnpm db:migrate, a GUI client, ...) — keep it in sync with
+      # DATABASE_URL's port in .env, they're set independently.
+      # Loopback only by default: nothing outside this host has any reason
+      # to reach the database, and Docker publishes ports past a host
+      # firewall like ufw — an open port here is open to the internet.
+      - "${POSTGRES_BIND:-127.0.0.1}:${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      # Loopback only by default, for the same reason as Postgres — and
+      # Redis here has no password at all.
+      - "${REDIS_BIND:-127.0.0.1}:${REDIS_PORT:-6380}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      # BuildKit isolates each build's network by default, so a build step
+      # (`apk add`, `pnpm install`) can't reach a proxy bound to the
+      # *host's* loopback (e.g. HTTP(S)_PROXY=http://127.0.0.1:PORT,
+      # common in sandboxed/corporate dev environments) — 127.0.0.1 inside
+      # that isolated network means the build container itself. `host`
+      # shares the host's network stack for the build only; it has no
+      # effect on the container's own runtime networking below.
+      network: host
+    # `env_file` is the single source of truth for WEB_ORIGIN/API_PUBLIC_URL/
+    # API_PORT/etc — nothing below re-hardcodes them, so changing .env is
+    # enough on its own (previously WEB_ORIGIN and API_PUBLIC_URL were
+    # duplicated here with fixed values that silently overrode .env, which
+    # is exactly the kind of "I changed .env but nothing happened" bug this
+    # is fixing).
+    restart: unless-stopped
+    env_file: .env
+    # `environment` wins over `env_file`, which is the point: a container
+    # IS the deployment, so it must never inherit a development NODE_ENV
+    # from .env. That leak is what silently dropped the `Secure` flag from
+    # the session cookie (config.isProduction gates it) and left the API
+    # logging at debug in production.
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/platform
+      REDIS_URL: redis://redis:6379
+      # Absolute path, independent of the container's working directory —
+      # matched to the named volume below so uploaded files (post
+      # attachments, avatars) survive a container recreate.
+      UPLOAD_DIR: /data/uploads
+      UPDATES_DIR: /srv/updates
+    ports:
+      # Both sides come from API_PORT: the container's own Fastify
+      # instance listens on API_PORT internally (see apps/api/src/
+      # config.ts), so the host mapping has to track it too, not assume
+      # it's always 4000.
+      # The browser reaches the API through the web server's /api proxy, so
+      # nothing outside this host needs this port — and an API reachable
+      # directly skips whatever filters the site's front door (a WAF, a
+      # proxy) applies. Loopback by default; API_BIND=0.0.0.0 only if
+      # something on another machine really talks to it directly.
+      - "${API_BIND:-127.0.0.1}:${API_PORT:-4000}:${API_PORT:-4000}"
+    volumes:
+      - uploads:/data/uploads
+      # Your own icon, for FAVICON=/branding/... in .env (see branding/README.md).
+      - ./branding:/branding:ro
+      # Where an administrator's "update" request is left for the updater
+      # (deploy/updater) and its progress read back.
+      - ./deploy/updates:/srv/updates
+    healthcheck:
+      # Node is already in the image; curl/wget are not guaranteed to be.
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+(process.env.API_PORT||4000)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+      network: host
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/platform
+      REDIS_URL: redis://redis:6379
+      # Inside it is always 3006; WORKER_HEALTH_PORT moves only the host side.
+      WORKER_HEALTH_PORT: "3006"
+      # The same uploads as the API: the worker stores imported stickers and
+      # copied pictures there. Without it they went into this container's
+      # own disk, the API never found them, and every imported sticker was
+      # a broken picture.
+      UPLOAD_DIR: /data/uploads
+      # The API, for what only it may do (a post written to the Telegram bot).
+      API_INTERNAL_URL: http://api:${API_PORT:-4000}
+    volumes:
+      - uploads:/data/uploads
+    ports:
+      # "Is a job loop coming round?" for the status page (deploy/gate),
+      # which watches from outside this project. Loopback only.
+      - "127.0.0.1:${WORKER_HEALTH_PORT:-3006}:3006"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      network: host
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      # How the web server reaches the API for /api/* and for federation
+      # paths it forwards. The browser never sees this address.
+      API_INTERNAL_URL: http://api:4000
+    ports:
+      # Host side only — Next.js always listens on 3000 *inside* the
+      # container; WEB_PORT just controls what you browse to on the host.
+      - "${WEB_BIND:-0.0.0.0}:${WEB_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      - api
+
+  # The status page is not here: it runs beside the gate, in a project of
+  # its own (deploy/gate/docker-compose.yml), so `docker compose down` of
+  # this one leaves it running — and saying that Cryptovich is down.
+
+volumes:
+  pgdata:
+  uploads:

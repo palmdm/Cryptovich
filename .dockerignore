@@ -1,0 +1,78 @@
+# What never belongs in a build context. Without this the daemon copies
+# ~250MB per image — node_modules and a stale `.next` among it, which the
+# build then has to work around: `COPY apps/web ./apps/web` would drop a
+# previous build's output into the image before `next build` runs.
+node_modules
+**/node_modules
+.git
+.gitignore
+
+# Build output an image makes for itself. `packages/*/dist` is NOT here on
+# purpose: the web image only runs `next build`, and Next resolves
+# `@platform/shared` to that prebuilt output — drop it and the build fails
+# with "Can't resolve '@platform/shared'".
+**/.next
+apps/api/dist
+apps/worker/dist
+apps/web/dist
+
+# Never ship configuration or uploaded files into an image.
+.env
+.env.*
+!.env.example
+apps/api/data
+apps/status/data
+branding
+
+# Local-only.
+.remember
+.claude
+releases
+deploy/updates
+**/*.log
+**/coverage
+docker-compose.override.yml
+
+# Code that has been removed from Cryptovich. A copy of this tree updated by
+# copying files over the old ones, rather than mirroring it, still has
+# them — and every build compiles all of src/ (Next checks all of
+# apps/web), so one leftover naming a dropped table stopped the API image
+# building. None of it is part of the app, so none of it enters an image.
+# Should one of these names ever be used again, take it off this list.
+apps/api/src/modules/streams
+apps/api/src/modules/connections
+apps/api/src/modules/podcasts
+apps/api/src/modules/stickers/provider-factory.ts
+apps/api/src/modules/payments/mock-provider.ts
+apps/api/src/modules/payments/provider.ts
+apps/api/test/streams-and-podcasts.test.ts
+apps/api/test/streams.test.ts
+apps/api/test/stickers-connect.test.ts
+apps/api/test/mock-provider.test.ts
+apps/worker/src/jobs/process-import-jobs.ts
+apps/worker/test/process-import-jobs.test.ts
+apps/web/app/dashboard/streams
+apps/web/app/dashboard/stickers
+apps/web/app/dashboard/federation
+apps/web/components/federate-button.tsx
+apps/web/components/nav-bar.tsx
+apps/web/components/notification-bell.tsx
+apps/web/public/sw.js
+packages/integrations/src/stickers/mock-provider.ts
+packages/integrations/src/stickers/mock-provider.test.ts
+packages/integrations/src/federation/mock-provider.ts
+packages/integrations/src/federation/mock-provider.test.ts
+apps/web/lib/avatar.ts
+apps/api/src/scripts/zz-seed-goals.mts
+# The post page moved to posts/[id]/. `*` stands for the bracketed
+# directory names, which this file would read as character classes.
+apps/web/app/*/p/*/post-client.tsx
+apps/web/components/push-prompt.tsx
+# Security and invites moved into the cabinet (app/dashboard/); the
+# settings layout listed them beside the appearance page.
+apps/web/app/settings/layout.tsx
+apps/web/app/settings/security
+apps/web/app/settings/invites
+# Selling a file on its own left the cabinet (0.5): a file is sold as a
+# paid post's attachment.
+apps/web/app/dashboard/new-file

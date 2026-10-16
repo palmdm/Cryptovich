@@ -1,0 +1,28 @@
+{
+  "name": "@platform/db",
+  "version": "0.6.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "generate": "CHECKPOINT_DISABLE=1 prisma generate",
+    "migrate": "CHECKPOINT_DISABLE=1 prisma migrate dev",
+    "migrate:deploy": "CHECKPOINT_DISABLE=1 prisma migrate deploy",
+    "migrate:test": "node scripts/migrate-test.mjs",
+    "seed": "tsx prisma/seed.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src --ext .ts",
+    "test": "echo \"no tests\" && exit 0"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "prisma": "^5.22.0",
+    "typescript": "^5.6.3",
+    "tsx": "^4.19.2"
+  }
+}

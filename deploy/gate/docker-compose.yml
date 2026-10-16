@@ -1,0 +1,85 @@
+# What stays up when Cryptovich does not, in a compose project of its own — so
+# `docker compose down` of Cryptovich leaves it running:
+#
+#  - the gate, a small nginx in front of the site: while the site is down
+#    or rebuilding, visitors get the "updating" page
+#    (../maintenance/index.html) instead of an error;
+#  - the status page (/status), an outside monitor in the manner of
+#    UptimeRobot: it keeps checking every part of Cryptovich and saying what is
+#    down, update or no update.
+#
+# scripts/upgrade.sh starts both. By hand, from the project folder:
+#   docker compose --env-file .env -f deploy/gate/docker-compose.yml up -d --build
+#
+# The WAF keeps pointing at GATE_PORT (3003); the site itself moves to
+# WEB_PORT=3013 in .env. See .env.example, "Gate".
+name: cryptovich-gate
+
+services:
+  gate:
+    image: nginx:alpine
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      GATE_PORT: ${GATE_PORT:-3003}
+      # The site where Cryptovich's own compose publishes it (same default, 3000).
+      WEB_UPSTREAM: ${WEB_UPSTREAM:-127.0.0.1:${WEB_PORT:-3000}}
+      STATUS_UPSTREAM: ${STATUS_UPSTREAM:-127.0.0.1:${STATUS_PORT:-3005}}
+    volumes:
+      - ./default.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ../maintenance:/srv/maintenance:ro
+
+  # On the host network, it checks each part where Cryptovich publishes it on
+  # this machine's loopback — the ports from .env, with Cryptovich's own
+  # defaults. Only what it needs is passed: no .env as a whole, so no
+  # database password — it only knocks on Postgres and Redis. The same
+  # maintenance folder tells it when an update is announced.
+  status:
+    build:
+      context: ../..
+      dockerfile: apps/status/Dockerfile
+      network: host
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      NODE_ENV: production
+      WEB_ORIGIN: ${WEB_ORIGIN:-}
+      WEB_PORT: ${WEB_PORT:-3000}
+      API_PORT: ${API_PORT:-4000}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5433}
+      REDIS_PORT: ${REDIS_PORT:-6380}
+      WORKER_HEALTH_PORT: ${WORKER_HEALTH_PORT:-3006}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-}
+      APP_VERSION: ${APP_VERSION:-}
+      STATUS_LISTEN: ${STATUS_BIND:-127.0.0.1}
+      STATUS_PORT: ${STATUS_PORT:-3005}
+      STATUS_DATA_DIR: /data
+      STATUS_MAINTENANCE_DIR: /srv/maintenance
+    volumes:
+      - status-data:/data
+      - ../maintenance:/srv/maintenance:ro
+
+  # Installs a newer signed release when an administrator asks from the
+  # site (About → Update). It listens on nothing; it reads the request the
+  # API leaves in deploy/updates and carries out scripts/upgrade.sh, which
+  # is why it has Docker's socket and the installation (at the same path
+  # as on this machine, so the build's relative paths still mean the same
+  # folders). Only a release of palmdm/Cryptovich, newer than this one and
+  # signed with deploy/release-key.pub, is ever installed. SELF_UPDATE=off
+  # in .env leaves it out.
+  updater:
+    profiles: ["self-update"]
+    build:
+      context: ../updater
+      network: host
+    restart: unless-stopped
+    environment:
+      CRYPTOVICH_DIR: ${CRYPTOVICH_DIR:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${CRYPTOVICH_DIR:-/nonexistent}:${CRYPTOVICH_DIR:-/nonexistent}
+      - ../updates:/srv/updates
+
+volumes:
+  status-data:
