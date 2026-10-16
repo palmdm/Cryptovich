@@ -36,12 +36,15 @@ Modular monolith, not microservices:
 ## Getting started
 
 1. Install full Docker and Docker Compose
-2. Clone, edit .env file and launch!
+2. Clone, edit `.env` file (this is just a simple example, but I still recommend using the production file `.env.production.example` right away) and launch!
 
 ```bash
 git clone https://github.com/palmdm/Cryptovich && cd Cryptovich
 cp .env.example .env
 ```
+
+> [!WARNING]
+> Please note that you must fill in the .env file with the database passwords, the administrator account, the domain, and the full path to the cloned project directory! Be sure to check the entire .env file before running the project!
 
 And now:
 

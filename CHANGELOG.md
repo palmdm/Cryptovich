@@ -3,16 +3,14 @@ VERSION=1.0.0
 # Список изменений Cryptovich
 
 <!--
-Как устроен этот файл.
+The first line is the Cryptovich version. It appears under the menu, in the API and worker logs, and in
+NodeInfo; Cryptovich displays a single announcement to readers stating, “Cryptovich
+has been updated to ….” The announcement text is the “## <same version>” section below, using the same
+markup as posts (**bold**, lists, links).
 
-Первая строка — версия Cryptovich. Её видно под меню, в логах API и воркера и в
-NodeInfo; на неё Cryptovich один раз показывает читателям объявление «Cryptovich
-обновлён до …». Текст объявления — раздел «## <та же версия>» ниже, в той же
-разметке, что и посты (**жирный**, списки, ссылки).
-
-Новый выпуск: поменять версию в первой строке и добавить раздел над
-предыдущим. Применяется при пересборке: docker compose up -d --build api web worker.
-Если в .env задан APP_VERSION, он важнее первой строки.
+New release: change the version in the first line and add a section above
+the previous one. Applied during a rebuild: docker compose up -d --build api web worker.
+If APP_VERSION is set in .env, it takes precedence over the first line.
 -->
 
 ## 1.0.0 — 2026-10-15
@@ -55,7 +53,7 @@ NodeInfo; на неё Cryptovich один раз показывает читат
 - Сообщения боту от чужого аккаунта ничего не публикуют: Telegram привязывается только одноразовым кодом со страницы Кабинета, а посты от бота принимает только ваш же сервер фоновых задач по своему секрету.
 
 ### Для администратора
-- **Как поставить данную версию.** Как обычно: `unzip -o ~/cryptovich-1.0.0.zip && ./scripts/upgrade.sh`. Шесть новых миграций базы (отслеживание, скидки, журнал импорта стикеров, короткие ссылки, две для Telegram) применяются сами при запуске API.
+- **Как поставить данную версию:** Скопируйте проект и запустите его через скрипт обновления и запуска `./scripts/upgrade.sh`. Шесть новых миграций базы (отслеживание, скидки, журнал импорта стикеров, короткие ссылки, две для Telegram) применяются сами при запуске API.
 - **Проект привратника переименован**: был `4tip-gate`, стал `cryptovich-gate`. `upgrade.sh` один раз останавливает старый и переносит историю страницы состояния в новый том. Когда убедитесь, что `/status` показывает прежнюю историю, старый том можно удалить: `docker volume rm 4tip-gate_status-data`.
 - **Апдейтер** (`deploy/updater`) — маленький контейнер рядом с привратником; запускается сам, `SELF_UPDATE=off` в `.env` его выключает. У него есть доступ к Docker, но порта он не слушает. Ставит он только подписанные выпуски. Сервер, на котором ещё нет ключа выпусков, обновляется вручную, как раньше.
 - **Подпись выпусков.** Один раз на своём компьютере: `./scripts/make-release.sh --new-key` — закрытый ключ ляжет в `~/.config/cryptovich/release-key.pem` (сохраните его копию в надёжном месте), открытый — в `deploy/release-key.pub` и уйдёт на сервер с ближайшим выпуском. Дальше каждый `./scripts/make-release.sh` создаёт `cryptovich-<версия>.zip` и подпись `.zip.sig`; оба файла прикрепите к выпуску `v<версия>` на github.com/palmdm/Cryptovich.
